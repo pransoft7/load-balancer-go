@@ -2,17 +2,14 @@ package main
 
 import (
 	"io"
+	"load-balancer-go/backends"
 	"log"
 	"net"
 	"sync"
 )
 
-type Service struct {
-	address string
-}
-
 type ServicePool struct {
-	instances []*Service
+	instances []*backends.Service
 	next      int
 	mu        sync.Mutex
 }
@@ -41,14 +38,14 @@ func main() {
 }
 
 func newServicePool(addresses []string) *ServicePool {
-	var instances []*Service
+	var instances []*backends.Service
 	// fmt.Println("inside newServicePool")
 	for _, a := range addresses {
-		newService := &Service{
-			address: a,
+		newService := &backends.Service{
+			Address: a,
 		}
 		// fmt.Println("declared service: ", a)
-		go newService.Create(a)
+		go newService.Create()
 		// fmt.Println("service created for address: ", a)
 		instances = append(instances, newService)
 	}
@@ -58,28 +55,8 @@ func newServicePool(addresses []string) *ServicePool {
 	}
 }
 
-func (s *Service) Create(address string) error {
-	l, err := net.Listen("tcp", address)
-	if err != nil {
-		return err
-	}
-	defer l.Close()
-
-	for {
-		conn, err := l.Accept()
-		if err != nil {
-			return err
-		}
-
-		go func(c net.Conn) {
-			io.Copy(c, c)
-			c.Close()
-		}(conn)
-	}
-}
-
 // Round robin implementation
-func (p *ServicePool) nextInstance() *Service {
+func (p *ServicePool) nextInstance() *backends.Service {
 	p.mu.Lock()
 	index := p.next % len(p.instances)
 	p.next++
@@ -113,11 +90,11 @@ func (lb *LoadBalancer) Start() error {
 
 func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 	service := lb.pool.nextInstance()
-	serviceConn, err := net.Dial("tcp", service.address)
+	serviceConn, err := net.Dial("tcp", service.Address)
 	if err != nil {
 		log.Println("error connecting to service", err)
 	}
-	log.Println("connection from ", clientConn.RemoteAddr(), " routed to: ", service.address)
+	log.Println("connection from ", clientConn.RemoteAddr(), " routed to: ", service.Address)
 	proxy(clientConn, serviceConn)
 }
 
