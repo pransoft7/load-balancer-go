@@ -6,7 +6,11 @@ import (
 	"log"
 	"net"
 	"sync"
+	"time"
 )
+
+type Service struct {
+}
 
 type ServicePool struct {
 	instances []*backends.Service
@@ -44,7 +48,6 @@ func newServicePool(addresses []string) *ServicePool {
 		newService := &backends.Service{
 			Address: a,
 		}
-		// fmt.Println("declared service: ", a)
 		go newService.Create()
 		// fmt.Println("service created for address: ", a)
 		instances = append(instances, newService)
@@ -77,7 +80,7 @@ func (lb *LoadBalancer) Start() error {
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("Service connection failed", err)
+			log.Println("LB connection failed", err)
 			conn.Close()
 			continue
 		}
@@ -89,19 +92,39 @@ func (lb *LoadBalancer) Start() error {
 }
 
 func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
-	service := lb.pool.nextInstance()
-	serviceConn, err := net.Dial("tcp", service.Address)
-	if err != nil {
-		log.Println("error connecting to service", err)
+	// TODO: Insert rateLimiter logic here!
+
+	// Loop retries all backends if one fails
+	for i := 0; i < len(lb.pool.instances); i++ {
+		service := lb.pool.nextInstance()
+		serviceConn, err := net.DialTimeout("tcp", service.Address, time.Millisecond*100)
+		if err != nil {
+			log.Println("error connecting to service", service.Address, err)
+			serviceConn.Close()
+			if i == len(lb.pool.instances)-1 {
+				log.Println("All services are down!")
+			}
+			continue
+		}
+		log.Println("connection from ", clientConn.RemoteAddr(), " routed to: ", service.Address)
+		proxy(clientConn, serviceConn)
+		break
 	}
-	log.Println("connection from ", clientConn.RemoteAddr(), " routed to: ", service.Address)
-	proxy(clientConn, serviceConn)
 }
 
-// TODO: Understand and implement properly
 func proxy(clientConn net.Conn, serviceConn net.Conn) {
-	defer clientConn.Close()
-	defer serviceConn.Close()
-	go io.Copy(serviceConn, clientConn)
-	io.Copy(clientConn, serviceConn)
+	var once sync.Once
+	closeAll := func() {
+		clientConn.Close()
+		serviceConn.Close()
+	}
+	go func() {
+		io.Copy(serviceConn, clientConn)
+		once.Do(closeAll)
+	}()
+
+	go func() {
+		io.Copy(clientConn, serviceConn)
+		once.Do(closeAll)
+	}()
 }

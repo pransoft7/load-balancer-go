@@ -1,6 +1,6 @@
 # Next steps
 
-- Add Timeout and if not, move to next backendn instead of closing client connection
+- Add Timeout for backend connections
+- Try other backends if the nextBackend() is down
 - Health checks to backends
-- Rate limiting
-- 
+- Token Bucket Rate Limiting for clients (TCP version)
