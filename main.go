@@ -2,7 +2,6 @@ package main
 
 import (
 	"io"
-	"load-balancer-go/backends"
 	"log"
 	"net"
 	"sync"
@@ -10,10 +9,11 @@ import (
 )
 
 type Service struct {
+	Address string
 }
 
 type ServicePool struct {
-	instances []*backends.Service
+	instances []*Service
 	next      int
 	mu        sync.Mutex
 }
@@ -29,9 +29,7 @@ func main() {
 		"localhost:9002",
 		"localhost:9003",
 	}
-	// fmt.Println("after services declaration!")
 	pool := newServicePool(services)
-	// fmt.Println("Created service pool with services")
 
 	lb := LoadBalancer{
 		listenAddr: ":8080",
@@ -42,13 +40,11 @@ func main() {
 }
 
 func newServicePool(addresses []string) *ServicePool {
-	var instances []*backends.Service
-	// fmt.Println("inside newServicePool")
+	var instances []*Service
 	for _, a := range addresses {
-		newService := &backends.Service{
+		newService := &Service{
 			Address: a,
 		}
-		go newService.Create()
 		// fmt.Println("service created for address: ", a)
 		instances = append(instances, newService)
 	}
@@ -59,7 +55,7 @@ func newServicePool(addresses []string) *ServicePool {
 }
 
 // Round robin implementation
-func (p *ServicePool) nextInstance() *backends.Service {
+func (p *ServicePool) nextInstance() *Service {
 	p.mu.Lock()
 	index := p.next % len(p.instances)
 	p.next++
@@ -81,7 +77,6 @@ func (lb *LoadBalancer) Start() error {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Println("LB connection failed", err)
-			conn.Close()
 			continue
 		}
 
@@ -92,15 +87,15 @@ func (lb *LoadBalancer) Start() error {
 }
 
 func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
+	// defer clientConn.Close()
 	// TODO: Insert rateLimiter logic here!
 
 	// Loop retries all backends if one fails
 	for i := 0; i < len(lb.pool.instances); i++ {
 		service := lb.pool.nextInstance()
-		serviceConn, err := net.DialTimeout("tcp", service.Address, time.Millisecond*100)
+		serviceConn, err := net.DialTimeout("tcp", service.Address, time.Millisecond*200)
 		if err != nil {
 			log.Println("error connecting to service", service.Address, err)
-			serviceConn.Close()
 			if i == len(lb.pool.instances)-1 {
 				log.Println("All services are down!")
 			}
