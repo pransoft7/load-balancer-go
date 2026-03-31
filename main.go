@@ -24,9 +24,16 @@ type ServicePool struct {
 type LoadBalancer struct {
 	listenAddr string
 	pool       *ServicePool
+	rl         *RateLimiter
 }
 
 func main() {
+	rl := NewRateLimiter(
+		5,              // capacity
+		1,              // tokens per second
+		10*time.Second, // TTL
+	)
+
 	services := []string{
 		"localhost:9001",
 		"localhost:9002",
@@ -39,6 +46,7 @@ func main() {
 	lb := LoadBalancer{
 		listenAddr: ":8080",
 		pool:       pool,
+		rl:         rl,
 	}
 	log.Println("Starting Load Balancer...")
 	lb.Start()
@@ -93,7 +101,7 @@ func healthCheck(pool *ServicePool) {
 		for _, svc := range pool.instances {
 			healthConn, err := net.DialTimeout("tcp", svc.Address, time.Millisecond*500)
 			if err != nil {
-				log.Println("Health check failed to backend: ", svc.Address)
+				// log.Println("Health check failed to backend: ", svc.Address)
 				svc.FailCounter++
 				if svc.FailCounter > 3 {
 					svc.Healthy = false
@@ -102,7 +110,7 @@ func healthCheck(pool *ServicePool) {
 				continue
 			}
 			healthConn.Close()
-			log.Println("Service ", svc.Address, " is healthy!")
+			// log.Println("Service ", svc.Address, " is healthy!")
 			svc.FailCounter = 0
 			svc.Healthy = true
 		}
@@ -113,6 +121,12 @@ func healthCheck(pool *ServicePool) {
 func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 	defer clientConn.Close()
 	// TODO: Insert rateLimiter logic here!
+	host, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
+	if !lb.rl.Allow(host) {
+		log.Println("rate limited: ", host)
+		clientConn.Close()
+		return
+	}
 
 	// Loop retries all backends if one fails
 	for i := 0; i < len(lb.pool.instances); i++ {
@@ -121,7 +135,7 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 			serviceConn, err := net.DialTimeout("tcp", service.Address, time.Millisecond*200)
 			if err != nil {
 				log.Println("error connecting to service", service.Address, err)
-				service.FailCounter++ // This will lead to race
+				service.FailCounter++ // This will lead to race, fix this
 				if i == len(lb.pool.instances)-1 {
 					log.Println("All services are down!")
 				}
