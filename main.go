@@ -11,8 +11,8 @@ import (
 
 type Service struct {
 	Address     string
-	FailCounter int
-	Healthy     bool
+	FailCounter atomic.Int32
+	Healthy     atomic.Bool
 }
 
 type ServicePool struct {
@@ -55,11 +55,8 @@ func main() {
 func newServicePool(addresses []string) *ServicePool {
 	var instances []*Service
 	for _, a := range addresses {
-		newService := &Service{
-			Address:     a,
-			FailCounter: 0,
-			Healthy:     true,
-		}
+		newService := &Service{Address: a}
+		newService.Healthy.Store(true)
 		instances = append(instances, newService)
 	}
 	return &ServicePool{
@@ -102,17 +99,15 @@ func healthCheck(pool *ServicePool) {
 			healthConn, err := net.DialTimeout("tcp", svc.Address, time.Millisecond*500)
 			if err != nil {
 				// log.Println("Health check failed to backend: ", svc.Address)
-				svc.FailCounter++
-				if svc.FailCounter > 3 {
-					svc.Healthy = false
-
+				if svc.FailCounter.Add(1) > 3 {
+					svc.Healthy.Store(false)
 				}
 				continue
 			}
 			healthConn.Close()
 			// log.Println("Service ", svc.Address, " is healthy!")
-			svc.FailCounter = 0
-			svc.Healthy = true
+			svc.FailCounter.Store(0)
+			svc.Healthy.Store(true)
 		}
 		time.Sleep(time.Second)
 	}
@@ -131,11 +126,12 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 	// Loop retries all backends if one fails
 	for i := 0; i < len(lb.pool.instances); i++ {
 		service := lb.pool.nextInstance()
-		if service.Healthy {
+		if service.Healthy.Load() {
 			serviceConn, err := net.DialTimeout("tcp", service.Address, time.Millisecond*200)
 			if err != nil {
 				log.Println("error connecting to service", service.Address, err)
-				service.FailCounter++ // This will lead to race, fix this
+				// Disabled the following line - now only health check handles fail counter preventing race condition
+				// service.FailCounter++
 				if i == len(lb.pool.instances)-1 {
 					log.Println("All services are down!")
 				}
@@ -148,6 +144,8 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 			continue
 		}
 	}
+	log.Println("All backends down")
+	return
 }
 
 func proxy(clientConn net.Conn, serviceConn net.Conn) {
