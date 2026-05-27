@@ -160,8 +160,14 @@ The current pool treats all backends equally. In practice backends may have diff
 **Metrics**  
 A simple metrics endpoint showing active connections per backend, rate-limit drops, health check states, retry rates would help when load-testing the server.
 
+**Benchmarking**
+A comprehensive benchmark script tailored to load test this server can provide insights on how much traffic it can handle and find potential bottlenecks, further feeding design enhancements.
+
 **Config Reload**
 Currently, we require a restart to change backend configuration. A possibility to reload backend configuration on the fly would be nice. This also needs redesign of next backend atomic counter as mentioned above.
 
 **Environment Variables**
 The parameters configuration can be handled with a `.env` file instead of directly changing in the main code.
+
+**Testing**
+Add detailed unit and integration tests
