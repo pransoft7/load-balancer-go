@@ -29,9 +29,9 @@ type LoadBalancer struct {
 
 func main() {
 	rl := NewRateLimiter(
-		5,              // capacity
-		1,              // tokens per second
-		10*time.Second, // TTL
+		10000,          // capacity
+		10,              // tokens per second
+		100*time.Second, // TTL
 	)
 
 	services := []string{
