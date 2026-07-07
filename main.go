@@ -67,7 +67,7 @@ func newServicePool(addresses []string) *ServicePool {
 
 // Round robin implementation
 func (p *ServicePool) nextInstance() *Service {
-	index := p.next.Add(1)
+	index := p.next.Add(1) - 1
 	return p.instances[index%uint64(len(p.instances))]
 }
 
@@ -115,7 +115,7 @@ func healthCheck(pool *ServicePool) {
 
 func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 	defer clientConn.Close()
-	// TODO: Insert rateLimiter logic here!
+	// Ratelimiter logic
 	host, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
 	if !lb.rl.Allow(host) {
 		log.Println("rate limited: ", host)
@@ -145,7 +145,7 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 		}
 	}
 	log.Println("All backends down")
-	return
+	// return - check why this is redundant return
 }
 
 func proxy(clientConn net.Conn, serviceConn net.Conn) {
