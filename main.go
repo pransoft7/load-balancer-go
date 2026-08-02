@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+const failThresholdForBackend int32 = 3
+
 type Service struct {
 	Address     string
 	FailCounter atomic.Int32
@@ -18,7 +20,8 @@ type Service struct {
 type ServicePool struct {
 	instances []*Service
 	next      atomic.Uint64
-	mu        sync.Mutex
+	// Use when we need to dynamically add/remove backends
+	// mu        sync.Mutex
 }
 
 type LoadBalancer struct {
@@ -29,7 +32,7 @@ type LoadBalancer struct {
 
 func main() {
 	rl := NewRateLimiter(
-		10000,          // capacity
+		10000,           // capacity
 		10,              // tokens per second
 		100*time.Second, // TTL
 	)
@@ -66,9 +69,16 @@ func newServicePool(addresses []string) *ServicePool {
 }
 
 // Round robin implementation
-func (p *ServicePool) nextInstance() *Service {
-	index := p.next.Add(1) - 1
-	return p.instances[index%uint64(len(p.instances))]
+func (p *ServicePool) nextHealthyInstance() *Service {
+	total := len(p.instances)
+	for i := 0; i < total; i++ {
+		index := p.next.Add(1) - 1
+		svc := p.instances[int(index)%total]
+		if svc.Healthy.Load() {
+			return svc
+		}
+	}
+	return nil
 }
 
 // TODO: Check the structure and order of process in this func
@@ -98,14 +108,12 @@ func healthCheck(pool *ServicePool) {
 		for _, svc := range pool.instances {
 			healthConn, err := net.DialTimeout("tcp", svc.Address, time.Millisecond*500)
 			if err != nil {
-				// log.Println("Health check failed to backend: ", svc.Address)
 				if svc.FailCounter.Add(1) > 3 {
 					svc.Healthy.Store(false)
 				}
 				continue
 			}
 			healthConn.Close()
-			// log.Println("Service ", svc.Address, " is healthy!")
 			svc.FailCounter.Store(0)
 			svc.Healthy.Store(true)
 		}
@@ -123,35 +131,36 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 		return
 	}
 
-	// Loop retries all backends if one fails
 	for i := 0; i < len(lb.pool.instances); i++ {
-		service := lb.pool.nextInstance()
-		if service.Healthy.Load() {
-			serviceConn, err := net.DialTimeout("tcp", service.Address, time.Millisecond*200)
-			if err != nil {
-				log.Println("error connecting to service", service.Address, err)
-				// Disabled the following line - now only health check handles fail counter preventing race condition
-				// service.FailCounter++
-				if i == len(lb.pool.instances)-1 {
-					log.Println("All services are down!")
-				}
-				continue
-			}
-			log.Println("connection from ", clientConn.RemoteAddr(), " routed to: ", service.Address)
-			proxy(clientConn, serviceConn)
+		service := lb.pool.nextHealthyInstance()
+		if service == nil {
 			break
-		} else {
-			continue
 		}
+		serviceConn, err := net.DialTimeout("tcp", service.Address, time.Millisecond*200)
+		if err != nil {
+			log.Println("error connecting to backend:", service.Address, err)
+		}
+		log.Println("connection from ", clientConn.RemoteAddr(), " routed to: ", service.Address)
+		proxy(clientConn, serviceConn)
+		return
 	}
 	log.Println("All backends down")
-	// return - check why this is redundant return
 }
 
 func proxy(clientConn net.Conn, serviceConn net.Conn) {
-	defer clientConn.Close()
+	// clientConn lifecycle is owned by handleConn
+	// defer clientConn.Close()
 	defer serviceConn.Close()
 
-	go io.Copy(serviceConn, clientConn)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done() // Safety net if proxy() panics
+		io.Copy(serviceConn, clientConn)
+	}()
 	io.Copy(clientConn, serviceConn)
+	serviceConn.Close() // io.Copy goroutine returns -> wg.Done
+	wg.Wait()
 }
+
+// Add live metrics endpoint and build a visualization frontend with claude code to find bottlenecks during benchmark
