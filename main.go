@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"io"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 )
 
 const failThresholdForBackend int32 = 3
+const shutdownTimeout = 30 // in seconds
 
 type Service struct {
 	Address     string
@@ -44,6 +49,9 @@ func main() {
 	}
 	pool := newServicePool(services)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	go healthCheck(pool)
 
 	lb := LoadBalancer{
@@ -52,7 +60,10 @@ func main() {
 		rl:         rl,
 	}
 	log.Println("Starting Load Balancer...")
-	lb.Start()
+
+	if err := lb.Start(ctx); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func newServicePool(addresses []string) *ServicePool {
@@ -82,22 +93,47 @@ func (p *ServicePool) nextHealthyInstance() *Service {
 }
 
 // TODO: Check the structure and order of process in this func
-func (lb *LoadBalancer) Start() error {
+func (lb *LoadBalancer) Start(ctx context.Context) error {
 	listener, err := net.Listen("tcp", lb.listenAddr)
 	if err != nil {
 		return err
 	}
 	// Graceful shutdown of listener
+	go func() {
+		<-ctx.Done()
+		listener.Close()
+	}()
 	defer listener.Close()
 
+	var wg sync.WaitGroup
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			log.Println("LB connection failed", err)
+			if ctx.Err() != nil {
+				log.Println("Shutting down, draining in-flight connections...")
+				done := make(chan struct{})
+				go func() {
+					wg.Wait()
+					close(done)
+				}()
+
+				select {
+				case <-done:
+					log.Println("All connections drained cleanly")
+				case <-time.After(shutdownTimeout * time.Second):
+					log.Println("Shutdown timeout exceeded, forcing exit")
+				}
+				
+				return nil
+			}
+			log.Println("LB connection failed:", err)
 			continue
 		}
-
-		go lb.handleConn(conn)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lb.handleConn(conn)
+		}()
 	}
 
 	// return nil
@@ -108,12 +144,18 @@ func healthCheck(pool *ServicePool) {
 		for _, svc := range pool.instances {
 			healthConn, err := net.DialTimeout("tcp", svc.Address, time.Millisecond*500)
 			if err != nil {
-				if svc.FailCounter.Add(1) > 3 {
-					svc.Healthy.Store(false)
+				if svc.Healthy.Load() {
+					if svc.FailCounter.Add(1) >= failThresholdForBackend {
+						log.Println("Backend unhealthy:", svc.Address)
+						svc.Healthy.Store(false)
+					}
 				}
 				continue
 			}
 			healthConn.Close()
+			if !svc.Healthy.Load() {
+				log.Println("backend recovered:", svc.Address)
+			}
 			svc.FailCounter.Store(0)
 			svc.Healthy.Store(true)
 		}
@@ -127,7 +169,6 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 	host, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
 	if !lb.rl.Allow(host) {
 		log.Println("rate limited: ", host)
-		clientConn.Close()
 		return
 	}
 
@@ -139,6 +180,7 @@ func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 		serviceConn, err := net.DialTimeout("tcp", service.Address, time.Millisecond*200)
 		if err != nil {
 			log.Println("error connecting to backend:", service.Address, err)
+			continue // try to connect to next backend
 		}
 		log.Println("connection from ", clientConn.RemoteAddr(), " routed to: ", service.Address)
 		proxy(clientConn, serviceConn)
