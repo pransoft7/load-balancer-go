@@ -15,6 +15,8 @@ import (
 
 const failThresholdForBackend int32 = 3
 const shutdownTimeout = 30 // in seconds
+// If any unhealthy backend exists, interval will be 1/5th of this
+const healthCheckInterval = 5 // seconds
 
 type Service struct {
 	Address     string
@@ -52,7 +54,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	go healthCheck(pool)
+	go healthCheck(ctx, pool)
 
 	lb := LoadBalancer{
 		listenAddr: ":8080",
@@ -123,7 +125,7 @@ func (lb *LoadBalancer) Start(ctx context.Context) error {
 				case <-time.After(shutdownTimeout * time.Second):
 					log.Println("Shutdown timeout exceeded, forcing exit")
 				}
-				
+
 				return nil
 			}
 			log.Println("LB connection failed:", err)
@@ -139,16 +141,16 @@ func (lb *LoadBalancer) Start(ctx context.Context) error {
 	// return nil
 }
 
-func healthCheck(pool *ServicePool) {
+func healthCheck(ctx context.Context, pool *ServicePool) {
 	for {
+		allHealthy := true
 		for _, svc := range pool.instances {
 			healthConn, err := net.DialTimeout("tcp", svc.Address, time.Millisecond*500)
 			if err != nil {
-				if svc.Healthy.Load() {
-					if svc.FailCounter.Add(1) >= failThresholdForBackend {
-						log.Println("Backend unhealthy:", svc.Address)
-						svc.Healthy.Store(false)
-					}
+				allHealthy = false
+				if svc.Healthy.Load() && svc.FailCounter.Add(1) >= failThresholdForBackend {
+					log.Println("Backend unhealthy:", svc.Address)
+					svc.Healthy.Store(false)
 				}
 				continue
 			}
@@ -159,7 +161,17 @@ func healthCheck(pool *ServicePool) {
 			svc.FailCounter.Store(0)
 			svc.Healthy.Store(true)
 		}
-		time.Sleep(time.Second)
+
+		interval := healthCheckInterval * time.Second
+		if !allHealthy {
+			interval = interval / 5
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
 	}
 }
 
