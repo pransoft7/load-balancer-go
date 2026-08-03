@@ -14,9 +14,8 @@ import (
 )
 
 const failThresholdForBackend int32 = 3
-const shutdownTimeout = 30 // in seconds
-// If any unhealthy backend exists, interval will be 1/5th of this
-const healthCheckInterval = 5 // seconds
+const shutdownTimeout = 30 * time.Second
+const healthCheckInterval = 5 * time.Second
 
 type Service struct {
 	Address     string
@@ -27,7 +26,7 @@ type Service struct {
 type ServicePool struct {
 	instances []*Service
 	next      atomic.Uint64
-	// Use when we need to dynamically add/remove backends
+	// Might use when we need to add/remove backends on-the-fly
 	// mu        sync.Mutex
 }
 
@@ -81,7 +80,6 @@ func newServicePool(addresses []string) *ServicePool {
 	}
 }
 
-// Round robin implementation
 func (p *ServicePool) nextHealthyInstance() *Service {
 	total := len(p.instances)
 	for i := 0; i < total; i++ {
@@ -94,7 +92,6 @@ func (p *ServicePool) nextHealthyInstance() *Service {
 	return nil
 }
 
-// TODO: Check the structure and order of process in this func
 func (lb *LoadBalancer) Start(ctx context.Context) error {
 	listener, err := net.Listen("tcp", lb.listenAddr)
 	if err != nil {
@@ -122,7 +119,7 @@ func (lb *LoadBalancer) Start(ctx context.Context) error {
 				select {
 				case <-done:
 					log.Println("All connections drained cleanly")
-				case <-time.After(shutdownTimeout * time.Second):
+				case <-time.After(shutdownTimeout):
 					log.Println("Shutdown timeout exceeded, forcing exit")
 				}
 
@@ -137,8 +134,6 @@ func (lb *LoadBalancer) Start(ctx context.Context) error {
 			lb.handleConn(conn)
 		}()
 	}
-
-	// return nil
 }
 
 func healthCheck(ctx context.Context, pool *ServicePool) {
@@ -162,7 +157,8 @@ func healthCheck(ctx context.Context, pool *ServicePool) {
 			svc.Healthy.Store(true)
 		}
 
-		interval := healthCheckInterval * time.Second
+		interval := healthCheckInterval
+		// Unhealthy backends reduce the health check time interval
 		if !allHealthy {
 			interval = interval / 5
 		}
@@ -177,7 +173,7 @@ func healthCheck(ctx context.Context, pool *ServicePool) {
 
 func (lb *LoadBalancer) handleConn(clientConn net.Conn) {
 	defer clientConn.Close()
-	// Ratelimiter logic
+	// Rate Limiter
 	host, _, _ := net.SplitHostPort(clientConn.RemoteAddr().String())
 	if !lb.rl.Allow(host) {
 		log.Println("rate limited: ", host)
@@ -213,7 +209,7 @@ func proxy(clientConn net.Conn, serviceConn net.Conn) {
 		io.Copy(serviceConn, clientConn)
 	}()
 	io.Copy(clientConn, serviceConn)
-	serviceConn.Close() // io.Copy goroutine returns -> wg.Done
+	serviceConn.Close() // unblocks the goroutine's pending writes - defer close is for safety
 	wg.Wait()
 }
 
