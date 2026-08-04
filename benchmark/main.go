@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -33,7 +34,15 @@ func main() {
 	fmt.Println("Success: ", success.Load())
 	fmt.Println("Failure: ", failure.Load())
 
-	// Add p95 latency
+	// Compute latencies
+	slices.Sort(latens)
+	p50 := latens[len(latens)*50/100]
+	p95 := latens[len(latens)*95/100]
+	p99 := latens[len(latens)*99/100]
+
+	fmt.Println("p50 latency:", p50)
+	fmt.Println("p95 latency:", p95)
+	fmt.Println("p99 latency:", p99)
 }
 
 func oneLoad(wg *sync.WaitGroup) {
