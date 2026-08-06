@@ -1,4 +1,4 @@
-package main
+package ratelimiter
 
 import (
 	"sync"
@@ -6,7 +6,7 @@ import (
 )
 
 type bucket struct {
-	mu        sync.Mutex
+	mu         sync.Mutex
 	capacity   float64
 	refillRate float64 // tokens per second
 	tokens     float64
@@ -15,22 +15,22 @@ type bucket struct {
 }
 
 type RateLimiter struct {
-	buckets map[string]*bucket
-	mu sync.Mutex
-	capacity float64
+	buckets    map[string]*bucket
+	mu         sync.Mutex
+	capacity   float64
 	refillRate float64
-	bucketTTL time.Duration
+	bucketTTL  time.Duration
 }
 
 func NewRateLimiter(capacity, refillRate float64, ttl time.Duration) *RateLimiter {
 	rl := &RateLimiter{
-		buckets: make(map[string]*bucket),
-		capacity: capacity,
+		buckets:    make(map[string]*bucket),
+		capacity:   capacity,
 		refillRate: refillRate,
-		bucketTTL: ttl,
+		bucketTTL:  ttl,
 	}
 	// Background Cleanup
-	go rl.CleanupLoop()
+	go rl.cleanupLoop()
 
 	return rl
 }
@@ -41,11 +41,11 @@ func (rl *RateLimiter) Allow(key string) bool {
 	b, exists := rl.buckets[key]
 	if !exists {
 		b = &bucket{
-			tokens: rl.capacity,
-			capacity: rl.capacity,
+			tokens:     rl.capacity,
+			capacity:   rl.capacity,
 			refillRate: rl.refillRate,
 			lastRefill: time.Now(),
-			lastSeen: time.Now(),
+			lastSeen:   time.Now(),
 		}
 		rl.buckets[key] = b
 	}
@@ -75,7 +75,7 @@ func (rl *RateLimiter) Allow(key string) bool {
 	return false
 }
 
-func (rl *RateLimiter) CleanupLoop() {
+func (rl *RateLimiter) cleanupLoop() {
 	ticker := time.NewTicker(time.Second * 5)
 	defer ticker.Stop()
 

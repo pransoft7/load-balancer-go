@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"load-balancer-go/ratelimiter"
 	"log"
 	"net"
 	"os"
@@ -33,11 +34,11 @@ type ServicePool struct {
 type LoadBalancer struct {
 	listenAddr string
 	pool       *ServicePool
-	rl         *RateLimiter
+	rl         *ratelimiter.RateLimiter
 }
 
 func main() {
-	rl := NewRateLimiter(
+	rl := ratelimiter.NewRateLimiter(
 		10000,           // capacity
 		10,              // tokens per second
 		100*time.Second, // TTL
